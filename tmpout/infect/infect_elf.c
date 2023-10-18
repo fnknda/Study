@@ -18,7 +18,7 @@ int main(int argc, char *argv[])
 
 	char target_copy[PATH_MAX] = {0};
 	{
-		snprintf(target_copy, sizeof(target_copy), "%s_injected", target);
+		snprintf(target_copy, sizeof(target_copy), "%s_infected", target);
 		char buffer[4096] = {0};
 		FILE *f = fopen(target, "r");
 		FILE *f_copy = fopen(target_copy, "w");

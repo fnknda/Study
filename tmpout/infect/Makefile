@@ -1,13 +1,13 @@
 .PHONY: all
-all: program_injected
+all: program_infected
 
-program_injected: program inject_elf
-	./inject_elf $<
+program_infected: program infect_elf
+	./infect_elf $<
 
 program: program.c
 	gcc -o $@ $<
 
-inject_elf: inject_elf.c payload.c
+infect_elf: infect_elf.c payload.c
 	gcc -o $@ $< -lelf
 
 payload.c: payload.s
@@ -18,4 +18,4 @@ payload.c: payload.s
 
 .PHONY: clean
 clean:
-	@rm -f payload.c inject_elf program_injected program
+	@rm -f payload.c infect_elf program_infected program

@@ -1,8 +1,8 @@
 .PHONY: all
-all: program_injected
+all: program_infected
 
-program_injected: inject_elf program
-	./inject_elf ./program
+program_infected: infect_elf program
+	./infect_elf ./program
 
 payload.c: payload.s
 	as -o payload.o $<
@@ -10,7 +10,7 @@ payload.c: payload.s
 	xxd -i -n shellcode payload.bin > $@
 	rm payload.o payload.bin
 
-inject_elf: inject_elf.c payload.c
+infect_elf: infect_elf.c payload.c
 	gcc -Og -ggdb -o $@ $<
 
 program: program.s
@@ -18,4 +18,4 @@ program: program.s
 
 .PHONY: clean
 clean:
-	rm -f program_injected payload.c inject_elf program
+	rm -f program_infected payload.c infect_elf program
