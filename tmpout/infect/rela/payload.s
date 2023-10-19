@@ -1,8 +1,6 @@
 .intel_syntax noprefix
 
 .text
-.global _start
-_start:
 	mov rax, 0x0a2164656e767670
 	mov QWORD PTR [rsp - 8], rax
 

