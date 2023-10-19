@@ -2,6 +2,14 @@
 
 https://tmpout.sh/
 
+## Elf Mangling
+
+A study to see how much can we distort an Elf and still be able to execute it.
+
+The result is a small elf with one single `PT_LOAD` segment and no sections.
+
+The byte codes for the executable is stored in an unused part of the header, and the program header is overlapping some bytes with the elf header to shrink it's size.
+
 ## Infection methods
 
 ### Basic `PT_NOTE` -> `PT_LOAD` on `e_entry`
