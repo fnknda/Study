@@ -1,10 +1,16 @@
-all: ulexec program
+all: loader libulexec.so program
 
-ulexec: ulexec.c
-	gcc -o $@ $^
+libulexec.so: ulexec.zig
+	zig build-lib -dynamic -lc $<
 
-program: program.c
-	gcc -o $@ $^
+loader: loader.c
+	gcc -o $@ -ldl $<
+
+program: program.o
+	ld -N -o $@ $<
+
+program.o: program.s
+	as -o $@ $<
 
 clean:
-	rm -f ulexec program
+	rm -f ulexec ulexec.o program program.o
