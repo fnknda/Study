@@ -1,16 +1,22 @@
-all: loader libulexec.so program
+all: loader libculexec.so libulexec.so program1 program2
+
+libculexec.so: culexec.c
+	gcc -Og -shared -o $@ $<
 
 libulexec.so: ulexec.zig
 	zig build-lib -dynamic -lc $<
 
 loader: loader.c
-	gcc -o $@ -ldl $<
+	gcc -Og -o $@ -ldl $<
 
-program: program.o
-	ld -N -o $@ $<
+program2: program2.c
+	gcc -static -o $@ $<
 
-program.o: program.s
+program1: program1.o
+	ld -o $@ $<
+
+program1.o: program1.s
 	as -o $@ $<
 
 clean:
-	rm -f ulexec ulexec.o program program.o
+	rm -f loader libulexec.so.o libulexec.so libculexec.so program1.o program1 program2

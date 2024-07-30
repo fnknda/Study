@@ -14,9 +14,9 @@ char *get_leaf(char *path)
 	return strrchr(path, '/');
 }
 
-int main(int argc, char *argv[])
+int main(int argc, char *argv[], char *env[])
 {
-	void *lib = dlopen("./libulexec.so", RTLD_NOW); //FIXME: Remove hard coded path
+	void *lib = dlopen("./libculexec.so", RTLD_NOW); //FIXME: Remove hard coded path
 	if (!lib) {
 		fprintf(stderr, "dlopen(): %s\n", dlerror());
 		exit(1);
@@ -28,7 +28,5 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	char *args[] = {"./program", NULL};
-	char *env[] = {NULL};
-	lib_ulexec(get_leaf(argv[0]), args, env);
+	lib_ulexec(get_leaf(argv[0]), &argv[1], env);
 }
