@@ -1,8 +1,6 @@
-# TMPOUT
+# STUDIES
 
-https://tmpout.sh/
-
-## Elf Mangling
+## Elf Mangling (tinyelf)
 
 A study to see how much can we distort an Elf and still be able to execute it.
 
