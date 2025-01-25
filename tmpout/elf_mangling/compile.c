@@ -6,7 +6,9 @@
 
 #include "code.c"
 
-#define CODE_VADDR (0x10000 + EI_PAD)
+//#define CODE_OFFSET EI_PAD
+#define CODE_OFFSET (sizeof(Elf64_Ehdr) - 8 + sizeof(Elf64_Phdr))
+#define CODE_VADDR (0x10000 + CODE_OFFSET)
 
 char *target = "code";
 
@@ -28,7 +30,7 @@ int main(void)
 	ehdr.e_ident[EI_OSABI] = 0x58;
 	ehdr.e_ident[EI_ABIVERSION] = 0x58;
 
-	memcpy(&ehdr.e_ident[EI_PAD], code, code_len);
+	//memcpy(&ehdr.e_ident[EI_PAD], code, code_len);
 
 	ehdr.e_type = ET_EXEC;
 	ehdr.e_machine = EM_X86_64;
@@ -49,7 +51,7 @@ int main(void)
 	memset(&phdr, 0, sizeof(phdr));
 
 	phdr.p_type = PT_LOAD;
-	phdr.p_offset = EI_PAD;
+	phdr.p_offset = CODE_OFFSET;
 	phdr.p_vaddr = CODE_VADDR;
 	phdr.p_paddr = 0x5858585858585858;
 	phdr.p_filesz = code_len;
@@ -60,6 +62,7 @@ int main(void)
 
 	write(fd, &ehdr, sizeof(ehdr) - 8);
 	write(fd, &phdr, sizeof(phdr));
+	write(fd, code, code_len);
 
 	close(fd);
 }

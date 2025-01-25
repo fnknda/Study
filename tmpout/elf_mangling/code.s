@@ -1,15 +1,16 @@
 .intel_syntax noprefix
 
 .text
-#	mov eax, 1
-#	mov edi, 1
-#	lea rsi, [rip + .Ltext]
-#	mov edx, 14
-#	syscall
+	mov al, 1
+	push rax
+	pop rdi
+	lea rsi, [rip + .Ltext]
+	mov dl, 14
+	syscall
 
 	mov al, 60
 	xor edi, edi
 	syscall
 
-#.Ltext:
-#	.ascii "Hello, world!\n"
+.Ltext:
+	.ascii "Hello, world!\n"
