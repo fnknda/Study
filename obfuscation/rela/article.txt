@@ -1,0 +1,573 @@
+Abusando SHT_RELA para ofuscar código
+(Re)descobrindo uma técnica                             ~ Fnknda<joao@fukuda.sh>
+
+---[0x00] INTRODUÇÃO -----------------------------------------------------------
+
+A inspiração inicial para essa técnica veio de um dos artigos mais recentes do
+tmp.0ut, o Relocation Revelation[0].
+
+Naquele artigo, é explorado o conceito de relocações em arquivos ELF, falando
+sobre as seções `SHT_REL` e `SHT_RELA`, e relacionando com outros conceitos
+talvez mais conhecidos como o GOT (Global Offset Table) e o PLT (Procedure
+Linkage Table).
+
+O intuito da técnica aqui apresentada é abusar desse mecanismo do formato ELF
+para sobrescrever, em tempo de execução, o código armazenado em memória durante
+o processo de *linkagem* (antes da execução ser passada para o código em si).
+
+---[0x01] BACKGROUND -----------------------------------------------------------
+
+A ideia de transformar a relocação em ofuscação vem de uma certa predisposição
+induzida.
+
+Vários dos artigos nas primeiras edições do tmp.0ut falam sobre ofuscação, desde
+EPO (Entry Point Obfuscation)[1][2][3] a polimorfismo[4] e VMs[5], e já que o
+hobby de malware começou por lá, o tópico foi um dos primeiros pontos de contato
+e, consequentemente, interesse que tive com o formato ELF.
+
+Fora ler artigos, também participo esporadicamente de alguns CTFs (Capture The
+Flags), e ofuscação aparece em peso em categorias como engenharia reversa e
+exploração de binários.
+
+A ofuscação está em todos os lugares! Não tem como ver uma coisa que muda seu
+código dinamicamente e não pensar "vou reescrever meu código inteiro usando isso
+aqui."
+
+---[0x02] EXPLORANDO A IDEIA ---------------------------------------------------
+
+O artigo base[0] nos da uma ideia boa de para que serve e como utilizar as
+seções ELF `SHT_REL` e `SHT_RELA`, mas não nos passa todos os requisitos que o
+ELF precisa cumprir para que a relocação funcione, isso cabe a nós descobrir.
+
+Já que o objetivo é escrever um arquivo ELF simples para implementar essa
+técnica antes de nos aprofundarmos mais, seria interessante fazê-lo na mão.
+
+Primeiro, cria-se um executável com o tipo `ET_DYN`, contendo somente o básico
+(os códigos-fonte utilizados estão disponíveis no apêndice):
+
++ +-Elf64_Ehdr------------+
++ |                       |
++ | eh_type = ET_DYN      |
++ | eh_phnum = 1          |
++ |                       |
++ +-Elf64_Phdr[]------[0]-+
++ |                       |
++ | p_type = PT_LOAD      |
++ | p_flags = PF_R | PF_X |
++ | p_offset = code_off   |
++ |                       |
++ +-código----------------+
++ |                       |
++ | nasm -f bin code.s    |
++ |                       |
++ +-----------------------+
+
+Esse arquivo executa o código escrito em `code.s` e nada mais. A partir daqui,
+começamos a incrementar o arquivo.
+
+Já que o `SHT_RELA` é uma seção ELF, vamos primeiro analisar a estrutura
+`Elf64_Shdr`. Ela tem alguns campos que requer um pouco mais de atenção.
+
+  +-Elf64_Shdr--------------------+
+  |                               |
+  |    typedef struct {           |
+  |      uint32_t   sh_name;      | *
+  |      uint32_t   sh_type;      | *
+  |      uint64_t   sh_flags;     | *
+  |      Elf64_Addr sh_addr;      |
+  |      Elf64_Off  sh_off;       |
+  |      uint64_t   sh_size;      |
+  |      uint32_t   sh_link;      | *
+  |      uint32_t   sh_info;      | *
+  |      uint64_t   sh_addralign; |
+  |      uint64_t   sh_entsize;   |
+  |  } Elf64_Shdr;                |
+  |                               |
+  +-------------------------------+
+
+De inicio, vemos que na *manpage* do ELF (`man elf`) o primeiro elemento do
+arranjo de `Elf64_Shdr`s em arquivos executáveis é uma estrutura com todos os
+seus campos definidos como zero.
+
+Dentro da estrutura em si, o valor de `sh_name` é um offset que aponta para uma
+string da seção da tabela de strings (`SHT_STRTAB`), cujo índice da seção é
+definida no campo `e_shstrndx` do `Elf64_Ehdr`.
+
+Outros dois campos interessantes são `sh_link` e `sh_info`. Seus significados
+mudam de acordo com o tipo de seção[6]. Para o nosso `SHT_RELA`, `sh_link`
+contém o índice na tabela de seções para uma `SHT_DYNSYM` associada (outra
+`Elf64_Shdr`), e `sh_info` contém outro índice na tabela de seções, dessa vez da
+seção em que esta sendo aplicada as relocações (no nosso caso, um `SHT_PROGBITS`
+da seção `.text`).
+
+Em `SHT_DYNSYM`, `sh_link` aponta para a `SHT_STRTAB` associada, e `sh_info`,
+contem o valor um maior que o último simbolo local listado na tabela de
+símbolos. `SHT_STRTAB` não tem nenhum significado definido para os campos
+`sh_link` e `sh_info`.
+
+O campo `sh_flags` também tem valores específicos dependendo do `Elf64_Shdr`[7].
+
+Na estrutura `Elf64_Rela`, em um arquivo executável, o campo `r_offset` contém o
+endereço virtual do nosso alvo de relocação, `r_info` tem dois valores em um:
+O tipo de relocação (`ELF32_R_TYPE(i)`) vai determinar qual calculo[8] vai ser
+utilizado para chegar no valor final que vai ser colocado no endereço apontado
+pelo campo anterior, e o símbolo (`ELF32_R_SYM(i)`) é um índice na tabela de
+símbolos associada (indicada no campo `sh_link`, em `SHT_RELA`).
+
+  +-Elf64_Rela---------------+
+  |                          |
+  | typedef struct {         |
+  |     Elf64_Addr r_offset; |
+  |     uint64_t   r_info;   |
+  |     int64_t    r_addend; |
+  | } Elf64_Rela;            |
+  |                          |
+  +--------------------------+
+
+  +-<elf.h>--------------------------------------------------------------------+
+  |                                                                            |
+  | #define ELF64_R_SYM(i)            ((i) >> 32)                              |
+  | #define ELF64_R_TYPE(i)           ((i) & 0xffffffff)                       |
+  | #define ELF64_R_INFO(sym, type)   ((((Elf64_Xword) (sym)) << 32) + (type)) |
+  |                                                                            |
+  +----------------------------------------------------------------------------+
+
+Por ultimo, a estrutura `Elf64_Sym` (elemento da tabela definida pela seção
+`SHT_DYNSYM`). Deixo a explicação dessa estrutura para uma outra hora. Para
+agora, basta saber que, igual à tabela de seções, essa também começa com um
+elemento cujos campos são todos definidos como zero. Isso inclui os campos
+`st_value` e `st_size`.
+
+ +-Elf64_Sym-------------------+
+ |                             |
+ | typedef struct {            |
+ |     uint32_t      st_name;  |
+ |     unsigned char st_info;  |
+ |     unsigned char st_other; |
+ |     uint16_t      st_shndx; |
+ |     Elf64_Addr    st_value; |
+ |     uint64_t      st_size;  |
+ | } Elf64_Sym;                |
+ |                             |
+ +-----------------------------+
+
+Para tentar reduzir a complexidade e minimizar o tamanho do arquivo, vamos
+adicionando essas seções uma por vez, a começar pelo `SHT_RELA` (o resto fica
+para depois, se precisar).
+
+O primeiro passo seria adicionar um SHT_RELA para fazer o redirecionamento.
+Analisando os tipos diferentes de redirecionamento[8], os que mais fazem sentido
+são os `R_X86_64_(8|16|32|64)`, e os `R_X86_64_SIZE(32|64)`. Para um primeiro
+POC, o objetivo vai ser substituir o primeiro byte por `0xcc` (`int3`). Já que
+estamos trabalhando com um byte, vamos usar o tipo `R_X86_64_8`.
+
+  +-Elf64_Ehdr---------------------------+
+  |                                      |
+  | e_type = ET_DYN                      |
+  | e_phnum = 1                          |
+  | e_shnum = 2                          |
+  |                                      |
+  +-Elf64_Phdr[]---------------------[0]-+
+  |                                      |
+  | p_type = PT_LOAD                     |
+  | p_flags = PF_R | PF_X                |
+  | p_offset = code_off                  |
+  |                                      |
+  +-código-------------------------------+
+  |                                      |
+  | nasm -f bin code.s                   |
+  |                                      |
++ +-Elf64_Shdr[]---[0]-+----------------[1]-+
++ |                    |                    |
++ | {0}                | sh_type = SHT_RELA |
++ |                    | sh_link = 0        |
++ |                    | sh_info = 0        |
++ |                    |                    |
++ +-Elf64_Rela[]-------+-------------[0]-+--+
++ |                                      |
++ | r_offset = code_off                  |
++ | r_info = ELF64_R_INFO(0, R_X86_64_8) |
++ | r_addend = 0xcc                      |
++ |                                      |
+  +--------------------------------------+
+
+  +-shell-------------------------------------------------------+
+  |                                                             |
+  | $ readelf -r reloc.out                                      |
+  |                                                             |
+  | Relocation section 0 at offset 0x12a contains 1 entry:      |
+  |   Offset          Info           Type    Sym. Name + Addend |
+  | 000000000078  00000000000e R_X86_64_8      cc               |
+  |                                                             |
+  +-------------------------------------------------------------+
+  (cortei a coluna "Sym. Value" do output para caber em 80 caracteres)
+
+O `r_offset` em `Elf64_Rela[0]` indica a posição do endereço virtual do código.
+Já que estou utilizando zero como endereço virtual base, os valores de endereço
+virtual, físico, e offset vão ser sempre os mesmos.
+
+O output do `readelf -r` parece normal, mas quando roda o programa, o esperado
+seria um core dump e uma mensagem sobre trace/breakpoint, mas isso não acontece.
+Tem algo faltando.
+
+O trecho da documentação da oracle falando sobre *runtime linker*[10] menciona a
+necessidade de um `PT_INTERP` para cuidar de gerar a imagem do programa em
+memoria. Esse interpretador pede a presença de um `SHT_DYNAMIC` carregado em
+memória através de um segmento `PT_LOAD`.
+
+Ele também fala sobre uma seção `.got`, uma `.plt` (ambas `SHT_PROGBITS`), e uma
+`.hash` (`SHT_HASH`). Mas vamos tentar fazer sem elas (sempre tentando remover o
+desnecessário). Se o interpretador reclamar, a gente faz.
+
+A seção `SHT_DYNAMIC` aponta para um arranjo de elementos do tipo `Elf64_Dyn`.
+Essa struct tem uma tag e um valor. A tag em `d_tag` indica qual o tipo de valor
+que vai ter em `d_un`.
+
+  +-Elf64_Dyn----------------------+
+  |                                |
+  | typedef struct                 |
+  | {                              |
+  |     Elf64_Sxword d_tag;        |
+  |     union                      |
+  |         {                      |
+  |             Elf64_Xword d_val; |
+  |             Elf64_Addr d_ptr;  |
+  |         } d_un;                |
+  | } Elf64_Dyn;                   |
+  |                                |
+  +--------------------------------+
+
+A tabela de tags do arranjo *dynamic*[11] indica o que é mandatório ou opcional,
+mas eu honestamente nunca fui muito bom em seguir regras, então a gente vai
+também ignorar a maioria dos mandatórios. Se reclamar, a gente faz.
+
+Os que parecem mais "mandatórios" para o nosso caso são as tags `DT_RELA`,
+`DT_RELASZ`, `DT_RELAENT` e `DT_NULL` (essa ultima tag marca o fim do arranjo).
+
+TODO: PT_LOAD no arquivo inteiro
+
+Com essas novas adições, o arquivo ficou assim:
+
+  +-Elf64_Ehdr---------------------------+
+  |                                      |
+  | e_type = ET_DYN                      |
+~ | e_phnum = 2                          |
+~ | e_shnum = 3                          |
+  |                                      |
+~ +-Elf64_Phdr[]------[0]-+--------------------------[1]-+
+~ |                       |                              |
+~ | p_type = PT_INTERP    | p_type = PT_LOAD             |
+~ | p_flags = PF_R        | p_flags = PF_R | PF_W | PF_X |
+~ | p_offset = interp_off | p_offset = 0                 |
+~ |                       |                              |
+  +-código----------------+------------------------------+
+  |                                      |
+  | nasm -f bin code.s                   |
+  |                                      |
++ +-interpretador------------------------+
++ |                                      | // Peguei o valor do output do ldd de
++ | /lib64/ld-linux-x86-64.so.2          
+
+TODO: O QUE ESTAVA ESCRITO AQUI??? REESCREVER...
+
+SHT_RELA SHT_DYNAMIC
+sem saida no `readelf -d`
+segfault no valgrind
+
+todos os executáveis dinâmicos que aparece antes de todos os outros: `PT_PHDR`.
+
+A documentação para esse segmento[12] nos indica que ele especifica a
+localização e o tamanho dos *program headers* em si, trabalhando em auxilio com
+o interpretador. De acordo com ela, precisamos colocar esse `PT_PHDR` antes de
+qualquer outro *program header* carregado em memória (vamos colocá-lo em
+primeiro lugar). Vamos aproveitar e também criar um `PT_DYNAMIC` (esse não tem
+nenhum requisito de posicionamento na tabela de *program headers*).
+
+TODO: Diagrama do ELF
+
+O aviso em `readelf -S` ainda persiste, e ainda temos segfault na execução do
+nosso arquivo, mas agora o valgrind aponta para outro erro: A seção `.dynamic`
+não foi encontrada entre os segmentos dinâmicos. Agora nao tem mais como fugir,
+precisamos criar um `SHT_STRTAB`.
+
+Vamos também atualizar a tabela de tags dinâmicas com os valores `DT_STRTAB` e
+`DT_STRSZ`.
+
+TODO: Diagrama do ELF
+
+Ainda temos um segfault, mas agora o valgrind esta nos falando que esta tendo
+problemas para resolver símbolos não identificados. Vamos fazer um `SHT_DYNSYM`.
+O conteúdo vai ser somente aquele primeiro simbolo com todos os campos zerados.
+Também não podemos nos esquecer de atualizar a tabela de tags dinâmicas com os
+valores `DT_SYMTAB` e `DT_SYMENT`.
+
+TODO: Diagrama do ELF
+
+A saída do `readelf -S` agora reclama da falta de um índice apontando para um
+`SHT_STRTAB` não só no `SHT_DYNAMIC`, mas no `SHT_DYNSYM` também, mas quando
+executamos nosso arquivo, ele não nos da mais um segfault.
+
+Agora quando executamos, o programa reclama do tipo de relocação. Aparentemente,
+não podemos utilizar `R_X86_64_8`. Testando os outros tipos, vemos que podemos
+utilizar somente `R_X86_64_(32|64)` ou `R_X86_64_SIZE(32|64)`. Todos esses tipos
+nos da o resultado esperado: um core dump e uma mensagem de breakpoint.
+
+Com isso, confirmamos que o redirecionamento conseguiu sobrescrever com sucesso
+um pedaço do código que esta sendo executado, e quais os requisitos mínimos para
+se obter sucesso com essa técnica.
+
+---[0x03] PROBLEMATIZAÇÃO ------------------------------------------------------
+
+Quando se esta criando o próprio arquivo ELF, não existe muito um problema. Um
+único ponto seria talvez o limite de espaço mapeado que o *linker* dinâmico tem
+disponível para escrever, mas isso pode ser facilmente circunvido através do
+aumento do tamanho que o `PT_LOAD` alvo ocupa em memoria modificando o campo
+`p_memsz`.
+
+Sobrescrever as seções também não parece ser um problema, mas os limites dessa
+afirmação podem ser testado mais a fundo em um outro momento.
+
+Outro problema é com as relocações do tipo `R_X86_64_(32|64)`. Essas adicionam o
+endereço base do símbolo ao calculo (no nosso caso, já que estamos utilizando o
+símbolo zero, esse valor seria o endereço base). Essas paginas são alinhadas em
+0x1000, então não afetam o primeiro byte e meio, mas todo o resto se torna muito
+difícil de determinar. Talvez seja possível utilizar esse ou outro tipo de
+relocação caso haja um simbolo especialmente feito para esse motivo, mas vai
+ficar para os próximos passos também.
+
+Os maiores pontos problemáticos aparecem ao utilizar essa técnica para a
+infecção de arquivos ELF. Devido à natureza do redirecionamento, o segmento
+sendo sobrescrito precisa ter permissão de escrita (`PF_W` no respectivo
+`p_flags`).
+
+Também é difícil reutilizar os redirecionamentos já existentes no arquivo sem
+modificar o funcionamento base do programa, e o número desses são limitados,
+fazendo-se difícil infectar um arquivo de maneira trivial com um payload
+complexo ou sem que modifique ou quebre completamente o funcionamento original
+do programa.
+
+Por último, caso queira adicionar mais redirecionamentos, ou caso queira manter
+o funcionamento original do programa, sera preciso, inevitavelmente, criar
+mais redirecionamentos, adicionando-os a uma seção já existente, ou criando uma
+nova. Esses novos bytes no arquivo vão dar um shift em todos os outros dados em
+volta. Será necessário levar em conta todos os offsets sendo mudados, e passar
+pelo arquivo inteiro corrigindo esses valores tanto no offset dentro do arquivo
+quanto no endereço virtual de qualquer coisa que estiver nas paginas do
+mapeamento modificado.
+
+---[0x04] OUTROS TRABALHOS -----------------------------------------------------
+
+Antes de continuar para a conclusão, gostaria de salientar que, mesmo que tenha
+descoberto isso tudo sozinho, não fui o primeiro. Antes de fazer todo esse
+trabalho, deveria ter pesquisado um pouco mais se alguém já tinha feito algo
+parecido.
+
+Consegui encontrar duas menções dessa técnica, ambas a ~5 anos atrás. Ambas
+utilizam da relocação para infectar arquivos, mas nenhuma criou um ELF.
+
+A mais velha[13] é uma POC. Ele modifica o `e_entry` para 0, adiciona permissão
+de escrita à `PT_LOAD` que cuida do endereço, e busca pelo redirecionamento
+referente ao simbolo `__gmon_start__`, modificando o `r_offset` para 0 e
+`r_addend` para 0xe9 (a instrução `jmp`) com o objetivo final sendo o de ofuscar
+o ponto de entrada.
+
+A segunda menção[14] é um pouco mais complexa. Ela tem uma parte de infecção com
+scripts e tudo. Muito legal, recomendo a leitura, mas não vou explicar aqui, se
+não fica muito longo.
+
+O mais interessante dessa segunda menção é que a pessoa também implementou um
+método de detecção para esse tipo de infecção/ofuscação. Ele olha por relocações
+desalinhadas com a memória, intersectadas entre si, ou que estejam utilizando
+tipos suspeitos (exatamente os `R_X86_64_SIZE(32|64)` que a gente usa).
+
+---[0x05] CONCLUSÃO ------------------------------------------------------------
+
+Mesmo sendo um pouco difícil a utilização desse método para infecção, suas
+peculiaridades com o que se diz respeito à ofuscação trazem alguns benefícios.
+
+O mais proeminente seria suas propriedades Anti-RE. O GDB, assim como vários
+outros métodos de depuração e análise dinâmica em Linux, utiliza o `ptrace` para
+modificar a memoria de outro programa durante sua execução.
+
+O jeito mais fácil de analisar o código é colocando breakpoints em instruções
+interessantes, e analisando o estado do processo naquele dado ponto. GDB alcança
+isso salvando a instrução que queremos parar, e substituindo-a pela instrução
+`int3` (0xcc) quando essa esta disponível na memoria.
+
+O que o nosso redirecionamento faz é sobrescrever esse `int3`, efetivamente
+impossibilitando a ferramenta de pausar a execução do código durante seu
+funcionamento. Isso ocorre pois a sobrescrita da relocação ocorre durante a
+execução do código, após a sobrescrita do depurador.
+
+Outro beneficio muito aparente é a complicação da análise estática, pois para
+quem está analisando, o código é outro. Uma vez que o método é identificado e
+compreendido, o analista ainda precisa extrair o código inteiro ou parcial,
+juntar com o que está em arquivo, e ai sim continuar sua análise.
+
+Por ultimo, esse método faz uso do interpretador, um programa externo, para
+decodificar e escrever o código malicioso em memória. O programa não precisa se
+quer mencionar nada sobre algo malicioso, faz uso de ferramentas legitimas para
+obter seu resultado.
+
+Mesmo não sendo a primeira pessoa a descobrir essa técnica, ainda me diverti
+bastante redescobrindo, mexendo e aprendendo mais sobre o formato de arquivo
+ELF, e suas interações com o ambiente Linux. Espero que também tenha gostado e
+tirado algum conhecimento daqui.
+
+Caso queira discutir sobre o assunto, estou (quase) sempre disponível pelo
+discord do tramoia.
+
+Bom hacking a todos. :):
+
+~ Fnknda
+
+---[0x06] REFERÊNCIAS ----------------------------------------------------------
+
+[0] https://tmpout.sh/4/4.html
+[1] https://tmpout.sh/1/7.html
+[2] https://tmpout.sh/1/11.html
+[3] https://tmpout.sh/2/2.html
+[4] https://tmpout.sh/1/6.html
+[5] https://tmpout.sh/2/7.html
+[6] https://docs.oracle.com/cd/E19683-01/817-3677/6mj8mbtc9/index.html#chapter6-47976
+[7] https://docs.oracle.com/cd/E19683-01/817-3677/6mj8mbtc9/index.html#chapter7-1
+[8] https://intezer.com/blog/executable-and-linkable-format-101-part-3-relocations/#h-x86-64-relocation-types
+[9] https://docs.oracle.com/cd/E19683-01/816-1386/6m7qcoblk/index.html#chapter6-42444
+[10] https://docs.oracle.com/cd/E19683-01/816-1386/6m7qcoblk/index.html#chapter6-35405
+[11] https://docs.oracle.com/cd/E19683-01/816-1386/6m7qcoblk/index.html#chapter6-tbl-52
+[12] https://docs.oracle.com/cd/E19683-01/816-1386/6m7qcoblk/index.html#chapter6-69880
+[13] https://github.com/ulexec/elf_rela_obfuscation
+[14] https://github.com/peding/relobfuscate
+
+---[0x06] APÊNDICE -------------------------------------------------------------
+
+$ cat Makefile | base64
+cmVsb2Mub3V0OiByZWxvY2F0aW9uCgkuLyQ8ICRACgpyZWxvY2F0aW9uOiByZWxvY2F0aW9uLmMgY29k
+ZS5oIGV2aWwuaAoKY29kZS5oOiBjb2RlLmJpbgoJeHhkIC1pIC1uIGNvZGUgJDwgfCB0ZWUgJEAKCmV2
+aWwuaDogZXZpbC5iaW4KCXh4ZCAtaSAtbiBldmlsICQ8IHwgdGVlICRACgpjb2RlLmJpbiBldmlsLmJp
+bjogJS5iaW46ICUucwoJbmFzbSAtZiBiaW4gLW8gJEAgJF4KCmNsZWFuOgoJcm0gLWYgZXZpbC5iaW4g
+ZXZpbC5oIGNvZGUuYmluIGNvZGUuaCByZWxvY2F0aW9uIHJlbG9jLm91dAoK
+
+$ cat code.s | base64
+QklUUyA2NAoKc2VjdGlvbiAudGV4dApnbG9iYWwgX3N0YXJ0Cl9zdGFydDoKCW1vdiByYXgsIDEKCW1v
+diByZGksIDEKCWxlYSByc2ksIFtyZWwgbXNnXQoJbW92IHJkeCwgMTQKCXN5c2NhbGwKCgltb3YgcmF4
+LCA2MAoJbW92IHJkaSwgMAoJc3lzY2FsbAoKbXNnOgoJZGIgIkhlbGxvLCB3b3JsZCEiLCAxMAoK
+
+$ cat evil.s | base64
+QklUUyA2NAoKc2VjdGlvbiAudGV4dApnbG9iYWwgX3N0YXJ0Cl9zdGFydDoKCWludDMKCW1vdiByYXgs
+ICIvYmluL3NoIgoJcHVzaCByYXgKCXB1c2ggcnNwCglwb3AgcmRpCgl4b3IgZWF4LCBlYXgKCXB1c2gg
+cmF4Cgltb3YgYWwsIDU5CglwdXNoIHJzcAoJcG9wIHJkeAoJcHVzaCByc3AKCXBvcCByc2kKCXN5c2Nh
+bGwK
+
+$ cat relocation.c | base64
+I2luY2x1ZGUgImNvZGUuaCIKI2luY2x1ZGUgImV2aWwuaCIKCiNpbmNsdWRlIDxlbGYuaD4KI2luY2x1
+ZGUgPG1lbW9yeS5oPgojaW5jbHVkZSA8c3RkYm9vbC5oPgojaW5jbHVkZSA8c3RkaW8uaD4KI2luY2x1
+ZGUgPHN0ZGxpYi5oPgojaW5jbHVkZSA8c3RyaW5nLmg+CiNpbmNsdWRlIDxzeXMvc3RhdC5oPgoKaW50
+IG1ha2VSZWxhKHNpemVfdCBjb2RlX29mZiwgYm9vbCB1c2VfZXZpbCwgRWxmNjRfUmVsYSAqKm91dCwg
+c2l6ZV90ICpvdXRfbnVtKTsKCmludCBtYWluKGludCBhcmdjLCBjaGFyICphcmd2W10pCnsKCWlmIChh
+cmdjICE9IDIpIHsKCQlwcmludGYoIlVzYWdlOiAlcyA8b3V0cHV0PlxuIiwgYXJndlswXSk7CgkJZXhp
+dCgxKTsKCX0KCUZJTEUgKmYgPSBmb3Blbihhcmd2WzFdLCAidysiKTsKCWlmICghZikgewoJCWV4aXQo
+MSk7Cgl9CglmY2htb2QoZmlsZW5vKGYpLCAwNzU1KTsKCglFbGY2NF9FaGRyIGVoZHIgPSB7MH07CglF
+bGY2NF9QaGRyIHBoZHJzWzRdOwoJY2hhciAqaW50ZXJwcmV0ZXIgPSAiL2xpYjY0L2xkLWxpbnV4LXg4
+Ni02NC5zby4yIjsKCglzaXplX3QgZWhkcl9zaXplID0gc2l6ZW9mKEVsZjY0X0VoZHIpOwoKCXNpemVf
+dCBwaGRyX29mZiA9IGVoZHJfc2l6ZTsKCXNpemVfdCBwaGRyX3NpemUgPSBzaXplb2YocGhkcnMpOwoJ
+c2l6ZV90IGNvZGVfb2ZmID0gcGhkcl9vZmYgKyBwaGRyX3NpemU7CglzaXplX3QgaW50ZXJwX29mZiA9
+IGNvZGVfb2ZmICsgY29kZV9sZW47CglzaXplX3QgaW50ZXJwX3NpemUgPSBzdHJsZW4oaW50ZXJwcmV0
+ZXIpICsgMTsKCglFbGY2NF9TaGRyIHNoZHJzWzVdOwoJRWxmNjRfRHluIGR5bmFtaWNbOF07CglFbGY2
+NF9TeW0gc3ltWzFdOwoJRWxmNjRfUmVsYSAqcmVsYTsKCWNoYXIgKnN0cnRhYltdID0gewoJICAgICIi
+LAoJICAgICIuZHluYW1pYyIsCgl9OwoKCXNpemVfdCBzaGRyX29mZiA9IGludGVycF9vZmYgKyBpbnRl
+cnBfc2l6ZTsKCXNpemVfdCBzaGRyX3NpemUgPSBzaXplb2Yoc2hkcnMpOwoJc2l6ZV90IHJlbGFfbnVt
+OwoJbWFrZVJlbGEoY29kZV9vZmYsIHRydWUsICZyZWxhLCAmcmVsYV9udW0pOwoJc2l6ZV90IHJlbGFf
+b2ZmID0gc2hkcl9vZmYgKyBzaGRyX3NpemU7CglzaXplX3QgcmVsYV9zaXplID0gcmVsYV9udW0gKiBz
+aXplb2YoRWxmNjRfUmVsYSk7CglzaXplX3QgZHluYW1pY19vZmYgPSByZWxhX29mZiArIHJlbGFfc2l6
+ZTsKCXNpemVfdCBkeW5hbWljX3NpemUgPSBzaXplb2YoZHluYW1pYyk7CglzaXplX3Qgc3RydGFiX29m
+ZiA9IGR5bmFtaWNfb2ZmICsgZHluYW1pY19zaXplOwoJc2l6ZV90IHN0cnRhYl9zaXplID0gMDsKCWZv
+ciAoaW50IGkgPSAwOyBpIDwgc2l6ZW9mKHN0cnRhYikgLyBzaXplb2YoY2hhciAqKTsgKytpKSB7CgkJ
+c3RydGFiX3NpemUgKz0gc3RybGVuKHN0cnRhYltpXSkgKyAxOwoJfQoJc2l6ZV90IHN5bV9vZmYgPSBz
+dHJ0YWJfb2ZmICsgc3RydGFiX3NpemU7CglzaXplX3Qgc3ltX3NpemUgPSBzaXplb2Yoc3ltKTsKCglz
+aXplX3QgZmlsZV9zaXplID0gc3ltX29mZiArIHN5bV9zaXplOwoKCWVoZHIuZV9pZGVudFtFSV9NQUcw
+XSA9IEVMRk1BRzA7CgllaGRyLmVfaWRlbnRbRUlfTUFHMV0gPSBFTEZNQUcxOwoJZWhkci5lX2lkZW50
+W0VJX01BRzJdID0gRUxGTUFHMjsKCWVoZHIuZV9pZGVudFtFSV9NQUczXSA9IEVMRk1BRzM7CgllaGRy
+LmVfaWRlbnRbRUlfQ0xBU1NdID0gRUxGQ0xBU1M2NDsKCWVoZHIuZV9pZGVudFtFSV9EQVRBXSA9IEVM
+RkRBVEEyTFNCOwoJZWhkci5lX2lkZW50W0VJX1ZFUlNJT05dID0gRVZfQ1VSUkVOVDsKCWVoZHIuZV9p
+ZGVudFtFSV9PU0FCSV0gPSBFTEZPU0FCSV9MSU5VWDsKCWVoZHIuZV9pZGVudFtFSV9BQklWRVJTSU9O
+XSA9IEVWX0NVUlJFTlQ7CgllaGRyLmVfdHlwZSA9IEVUX0RZTjsKCWVoZHIuZV9tYWNoaW5lID0gRU1f
+WDg2XzY0OwoJZWhkci5lX3ZlcnNpb24gPSBFVl9DVVJSRU5UOwoJZWhkci5lX2VudHJ5ID0gY29kZV9v
+ZmY7CgllaGRyLmVfcGhvZmYgPSBwaGRyX29mZjsKCWVoZHIuZV9zaG9mZiA9IHNoZHJfb2ZmOwoJZWhk
+ci5lX2ZsYWdzID0gMDsKCWVoZHIuZV9laHNpemUgPSBzaXplb2YoRWxmNjRfRWhkcik7CgllaGRyLmVf
+cGhlbnRzaXplID0gc2l6ZW9mKEVsZjY0X1BoZHIpOwoJZWhkci5lX3BobnVtID0gc2l6ZW9mKHBoZHJz
+KSAvIHNpemVvZihFbGY2NF9QaGRyKTsKCWVoZHIuZV9zaGVudHNpemUgPSBzaXplb2YoRWxmNjRfU2hk
+cik7CgllaGRyLmVfc2hudW0gPSBzaXplb2Yoc2hkcnMpIC8gc2l6ZW9mKEVsZjY0X1NoZHIpOwoJZWhk
+ci5lX3Noc3RybmR4ID0gMzsKCglwaGRyc1swXS5wX3R5cGUgPSBQVF9QSERSOwoJcGhkcnNbMF0ucF9m
+bGFncyA9IFBGX1I7CglwaGRyc1swXS5wX29mZnNldCA9IHBoZHJfb2ZmOwoJcGhkcnNbMF0ucF92YWRk
+ciA9IHBoZHJfb2ZmOwoJcGhkcnNbMF0ucF9wYWRkciA9IHBoZHJfb2ZmOwoJcGhkcnNbMF0ucF9maWxl
+c3ogPSBwaGRyX3NpemU7CglwaGRyc1swXS5wX21lbXN6ID0gcGhkcl9zaXplOwoJcGhkcnNbMF0ucF9h
+bGlnbiA9IDB4ODsKCglwaGRyc1sxXS5wX3R5cGUgPSBQVF9JTlRFUlA7CglwaGRyc1sxXS5wX2ZsYWdz
+ID0gUEZfUjsKCXBoZHJzWzFdLnBfb2Zmc2V0ID0gaW50ZXJwX29mZjsKCXBoZHJzWzFdLnBfdmFkZHIg
+PSBpbnRlcnBfb2ZmOwoJcGhkcnNbMV0ucF9wYWRkciA9IGludGVycF9vZmY7CglwaGRyc1sxXS5wX2Zp
+bGVzeiA9IGludGVycF9zaXplOwoJcGhkcnNbMV0ucF9tZW1zeiA9IGludGVycF9zaXplOwoJcGhkcnNb
+MV0ucF9hbGlnbiA9IDB4MTsKCglwaGRyc1syXS5wX3R5cGUgPSBQVF9MT0FEOwoJcGhkcnNbMl0ucF9m
+bGFncyA9IFBGX1IgfCBQRl9XIHwgUEZfWDsKCXBoZHJzWzJdLnBfb2Zmc2V0ID0gMDsKCXBoZHJzWzJd
+LnBfdmFkZHIgPSAwOwoJcGhkcnNbMl0ucF9wYWRkciA9IDA7CglwaGRyc1syXS5wX2ZpbGVzeiA9IGZp
+bGVfc2l6ZTsKCXBoZHJzWzJdLnBfbWVtc3ogPSBmaWxlX3NpemU7CglwaGRyc1syXS5wX2FsaWduID0g
+MHgxMDAwOwoKCXBoZHJzWzNdLnBfdHlwZSA9IFBUX0RZTkFNSUM7CglwaGRyc1szXS5wX2ZsYWdzID0g
+UEZfUjsKCXBoZHJzWzNdLnBfb2Zmc2V0ID0gZHluYW1pY19vZmY7CglwaGRyc1szXS5wX3ZhZGRyID0g
+ZHluYW1pY19vZmY7CglwaGRyc1szXS5wX3BhZGRyID0gZHluYW1pY19vZmY7CglwaGRyc1szXS5wX2Zp
+bGVzeiA9IGR5bmFtaWNfc2l6ZTsKCXBoZHJzWzNdLnBfbWVtc3ogPSBkeW5hbWljX3NpemU7CglwaGRy
+c1szXS5wX2FsaWduID0gMHg4OwoKCW1lbXNldCgmc2hkcnNbMF0sIDAsIHNpemVvZihFbGY2NF9TaGRy
+KSk7CgoJbWVtc2V0KCZzaGRyc1sxXSwgMCwgc2l6ZW9mKEVsZjY0X1NoZHIpKTsKCXNoZHJzWzFdLnNo
+X25hbWUgPSAwOwoJc2hkcnNbMV0uc2hfdHlwZSA9IFNIVF9SRUxBOwoJc2hkcnNbMV0uc2hfYWRkciA9
+IHJlbGFfb2ZmOwoJc2hkcnNbMV0uc2hfb2Zmc2V0ID0gcmVsYV9vZmY7CglzaGRyc1sxXS5zaF9zaXpl
+ID0gcmVsYV9zaXplOwoJc2hkcnNbMV0uc2hfYWRkcmFsaWduID0gODsKCXNoZHJzWzFdLnNoX2VudHNp
+emUgPSBzaXplb2YoRWxmNjRfUmVsYSk7CgoJbWVtc2V0KCZzaGRyc1syXSwgMCwgc2l6ZW9mKEVsZjY0
+X1NoZHIpKTsKCXNoZHJzWzJdLnNoX25hbWUgPSAxOwoJc2hkcnNbMl0uc2hfdHlwZSA9IFNIVF9EWU5B
+TUlDOwoJc2hkcnNbMl0uc2hfZmxhZ3MgPSBTSEZfQUxMT0MgfCBTSEZfV1JJVEU7CglzaGRyc1syXS5z
+aF9hZGRyID0gZHluYW1pY19vZmY7CglzaGRyc1syXS5zaF9vZmZzZXQgPSBkeW5hbWljX29mZjsKCXNo
+ZHJzWzJdLnNoX3NpemUgPSBkeW5hbWljX3NpemU7CglzaGRyc1syXS5zaF9hZGRyYWxpZ24gPSA4OwoJ
+c2hkcnNbMl0uc2hfZW50c2l6ZSA9IHNpemVvZihFbGY2NF9EeW4pOwoKCW1lbXNldCgmc2hkcnNbM10s
+IDAsIHNpemVvZihFbGY2NF9TaGRyKSk7CglzaGRyc1szXS5zaF9uYW1lID0gMDsKCXNoZHJzWzNdLnNo
+X3R5cGUgPSBTSFRfU1RSVEFCOwoJc2hkcnNbM10uc2hfZmxhZ3MgPSBTSEZfQUxMT0M7CglzaGRyc1sz
+XS5zaF9hZGRyID0gc3RydGFiX29mZjsKCXNoZHJzWzNdLnNoX29mZnNldCA9IHN0cnRhYl9vZmY7Cglz
+aGRyc1szXS5zaF9zaXplID0gc3RydGFiX3NpemU7CglzaGRyc1szXS5zaF9hZGRyYWxpZ24gPSA4OwoK
+CW1lbXNldCgmc2hkcnNbNF0sIDAsIHNpemVvZihFbGY2NF9TaGRyKSk7CglzaGRyc1s0XS5zaF9uYW1l
+ID0gMDsKCXNoZHJzWzRdLnNoX3R5cGUgPSBTSFRfRFlOU1lNOwoJc2hkcnNbNF0uc2hfZmxhZ3MgPSBT
+SEZfQUxMT0M7CglzaGRyc1s0XS5zaF9hZGRyID0gc3ltX29mZjsKCXNoZHJzWzRdLnNoX29mZnNldCA9
+IHN5bV9vZmY7CglzaGRyc1s0XS5zaF9zaXplID0gc3ltX3NpemU7CglzaGRyc1s0XS5zaF9pbmZvID0g
+MTsKCXNoZHJzWzRdLnNoX2FkZHJhbGlnbiA9IDg7CglzaGRyc1s0XS5zaF9lbnRzaXplID0gc2l6ZW9m
+KEVsZjY0X1N5bSk7CgoJZHluYW1pY1swXS5kX3RhZyA9IERUX1JFTEE7CglkeW5hbWljWzBdLmRfdW4u
+ZF9wdHIgPSByZWxhX29mZjsKCglkeW5hbWljWzFdLmRfdGFnID0gRFRfUkVMQVNaOwoJZHluYW1pY1sx
+XS5kX3VuLmRfdmFsID0gcmVsYV9zaXplOwoKCWR5bmFtaWNbMl0uZF90YWcgPSBEVF9SRUxBRU5UOwoJ
+ZHluYW1pY1syXS5kX3VuLmRfdmFsID0gc2l6ZW9mKEVsZjY0X1JlbGEpOwoKCWR5bmFtaWNbM10uZF90
+YWcgPSBEVF9TVFJUQUI7CglkeW5hbWljWzNdLmRfdW4uZF9wdHIgPSBzdHJ0YWJfb2ZmOwoKCWR5bmFt
+aWNbNF0uZF90YWcgPSBEVF9TVFJTWjsKCWR5bmFtaWNbNF0uZF91bi5kX3ZhbCA9IHN0cnRhYl9zaXpl
+OwoKCWR5bmFtaWNbNV0uZF90YWcgPSBEVF9TWU1UQUI7CglkeW5hbWljWzVdLmRfdW4uZF9wdHIgPSBz
+eW1fb2ZmOwoKCWR5bmFtaWNbNl0uZF90YWcgPSBEVF9TWU1FTlQ7CglkeW5hbWljWzZdLmRfdW4uZF92
+YWwgPSBzaXplb2YoRWxmNjRfU3ltKTsKCglkeW5hbWljWzddLmRfdGFnID0gRFRfTlVMTDsKCWR5bmFt
+aWNbN10uZF91bi5kX3ZhbCA9IDA7CgoJbWVtc2V0KCZzeW1bMF0sIDAsIHNpemVvZihFbGY2NF9TeW0p
+KTsKCglmd3JpdGUoJmVoZHIsIDEsIGVoZHJfc2l6ZSwgZik7CgoJZndyaXRlKHBoZHJzLCAxLCBwaGRy
+X3NpemUsIGYpOwoJZndyaXRlKGNvZGUsIDEsIGNvZGVfbGVuLCBmKTsKCWZ3cml0ZShpbnRlcnByZXRl
+ciwgMSwgaW50ZXJwX3NpemUsIGYpOwoKCWZ3cml0ZShzaGRycywgMSwgc2hkcl9zaXplLCBmKTsKCWZ3
+cml0ZShyZWxhLCAxLCByZWxhX3NpemUsIGYpOwoJZndyaXRlKGR5bmFtaWMsIDEsIGR5bmFtaWNfc2l6
+ZSwgZik7Cglmb3IgKGludCBpID0gMDsgaSA8IHNpemVvZihzdHJ0YWIpIC8gc2l6ZW9mKGNoYXIgKik7
+ICsraSkgewoJCWZ3cml0ZShzdHJ0YWJbaV0sIDEsIHN0cmxlbihzdHJ0YWJbaV0pICsgMSwgZik7Cgl9
+Cglmd3JpdGUoc3ltLCAxLCBzeW1fc2l6ZSwgZik7CgoJZnJlZShyZWxhKTsKCWZjbG9zZShmKTsKfQoK
+aW50IG1ha2VSZWxhKHNpemVfdCBjb2RlX29mZiwgYm9vbCB1c2VfZXZpbCwgRWxmNjRfUmVsYSAqKm91
+dCwgc2l6ZV90ICpvdXRfbnVtKQp7CglFbGY2NF9SZWxhICpyZWxhOwoJaW50IHJlbGFfbnVtOwoKCWlm
+ICh1c2VfZXZpbCkgewoJCXJlbGFfbnVtID0gZXZpbF9sZW4gLyA4OwoJCWlmIChldmlsX2xlbiAlIDgg
+PiAwKSB7CgkJCXJlbGFfbnVtKys7CgkJfQoKCQlyZWxhID0gY2FsbG9jKHJlbGFfbnVtLCBzaXplb2Yo
+RWxmNjRfUmVsYSkpOwoKCQlzaXplX3QgYnl0ZXNfbGVmdCA9IGV2aWxfbGVuOwoJCWludCByZWxhX2kg
+PSAwOwoJCWZvciAoOyBieXRlc19sZWZ0ID49IDg7IHJlbGFfaSsrKSB7CgkJCXJlbGFbcmVsYV9pXS5y
+X29mZnNldCA9IGNvZGVfb2ZmICsgcmVsYV9pICogODsKCQkJcmVsYVtyZWxhX2ldLnJfaW5mbyA9IEVM
+RjY0X1JfSU5GTygwLCBSX1g4Nl82NF82NCk7CgkJCXJlbGFbcmVsYV9pXS5yX2FkZGVuZCA9ICoodWlu
+dDY0X3QgKikgKCZldmlsW3JlbGFfaSAqIDhdKTsKCQkJYnl0ZXNfbGVmdCAtPSA4OwoJCX0KCgkJaWYg
+KGJ5dGVzX2xlZnQgPiAwKSB7CgkJCXJlbGFbcmVsYV9pXS5yX29mZnNldCA9IGNvZGVfb2ZmICsgcmVs
+YV9pICogOCAtIDggKyBieXRlc19sZWZ0OwoJCQlyZWxhW3JlbGFfaV0ucl9pbmZvID0gRUxGNjRfUl9J
+TkZPKDAsIFJfWDg2XzY0XzY0KTsKCQkJcmVsYVtyZWxhX2ldLnJfYWRkZW5kID0gKih1aW50NjRfdCAq
+KSAoJmV2aWxbcmVsYV9pICogOCAtIDggKyBieXRlc19sZWZ0XSk7CgkJfQoJfQoJZWxzZSB7CgkJcmVs
+YSA9IGNhbGxvYygxLCBzaXplb2YoRWxmNjRfUmVsYSkpOwoJCXJlbGFfbnVtID0gMTsKCgkJdW5pb24g
+ewoJCQl1aW50NjRfdCBpNjQ7CgkJCXVpbnQ4X3QgYThbOF07CgkJfSB2YWx1ZTsKCQl2YWx1ZS5pNjQg
+PSAqKHVpbnQ2NF90ICopIGNvZGU7CgkJdmFsdWUuYThbMF0gPSAweGNjOwoKCQlyZWxhWzBdLnJfb2Zm
+c2V0ID0gY29kZV9vZmY7CgkJcmVsYVswXS5yX2luZm8gPSBFTEY2NF9SX0lORk8oMCwgUl9YODZfNjRf
+NjQpOwoJCXJlbGFbMF0ucl9hZGRlbmQgPSB2YWx1ZS5pNjQ7Cgl9Cgkqb3V0ID0gcmVsYTsKCSpvdXRf
+bnVtID0gcmVsYV9udW07Cn0K
+

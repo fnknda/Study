@@ -1,21 +1,17 @@
-global _start
+BITS 64
+
 section .text
+global _start
 _start:
-	jmp greet
-cont:
-
-	mov rax, 60
-	mov rdi, 0
-	syscall
-
-greet:
 	mov rax, 1
 	mov rdi, 1
 	lea rsi, [rel msg]
 	mov rdx, 14
 	syscall
 
-	jmp cont
+	mov rax, 60
+	mov rdi, 0
+	syscall
 
 msg:
 	db "Hello, world!", 10

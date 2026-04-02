@@ -1,5 +1,8 @@
 code.out
 code.bin
 code.h
+evil.out
+evil.bin
+evil.h
 relocation
 reloc.out
