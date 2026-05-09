@@ -1,0 +1,75 @@
+% gruvbox.sty
+\ProvidesPackage{gruvbox}[2026/04/30 Gruvbox color theme for Metropolis/Moloch]
+
+\RequirePackage{xcolor}
+
+% --- Gruvbox (dark) palette ---
+\definecolor{gruvbg}{HTML}{282828}   % background
+\definecolor{gruvfg}{HTML}{EBDBB2}   % foreground / text
+\definecolor{gruvgray}{HTML}{928374} % comment / secondary text
+\definecolor{gruvred}{HTML}{FB4934}
+\definecolor{gruvgreen}{HTML}{B8BB26}
+\definecolor{gruvyellow}{HTML}{FABD2F}
+\definecolor{gruvblue}{HTML}{83A598}
+\definecolor{gruvpurple}{HTML}{D3869B}
+\definecolor{gruvarange}{HTML}{FE8019}
+\definecolor{gruvcyan}{HTML}{8EC07C}
+\definecolor{gruvmagenta}{HTML}{D65D0E}
+
+% --- Generic color setup ---
+\setbeamercolor{normal text}{fg=gruvfg,bg=gruvbg}
+\setbeamercolor{structure}{fg=gruvblue} % used by Metropolis for accents
+\setbeamercolor{frametitle}{fg=gruvfg,bg=gruvbg}
+\setbeamercolor{framesubtitle}{fg=gruvgray}
+\setbeamercolor{title}{fg=gruvfg,bg=gruvbg}
+\setbeamercolor{subtitle}{fg=gruvgray}
+\setbeamercolor{author}{fg=gruvgray}
+\setbeamercolor{date}{fg=gruvgray}
+
+% Sidebar / headline (for Moloch/Metropolis variants that show a bar)
+\setbeamercolor{palette primary}{fg=gruvfg,bg=gruvblue}
+\setbeamercolor{palette secondary}{fg=gruvfg,bg=gruvpurple}
+\setbeamercolor{palette tertiary}{fg=gruvfg,bg=gruvgreen}
+\setbeamercolor{palette quaternary}{fg=gruvfg,bg=gruvyellow}
+
+% Blocks
+\setbeamercolor{block title}{fg=gruvbg,bg=gruvblue}
+\setbeamercolor{block body}{fg=gruvfg,bg=gruvbg}
+\setbeamercolor{block alerted title}{fg=gruvbg,bg=gruvred}
+\setbeamercolor{block alerted body}{fg=gruvfg,bg=gruvbg}
+\setbeamercolor{block example title}{fg=gruvbg,bg=gruvgreen}
+\setbeamercolor{block example body}{fg=gruvfg,bg=gruvbg}
+
+% Alerts, emphasis, itemize
+\setbeamercolor{alerted text}{fg=gruvred}
+\setbeamercolor{emph}{fg=gruvyellow}
+\setbeamercolor{itemize item}{fg=gruvblue}
+\setbeamercolor{itemize subitem}{fg=gruvpurple}
+\setbeamercolor{itemize subsubitem}{fg=gruvgreen}
+
+% Sidebar shading and separation lines
+\setbeamercolor{sidebar}{bg=gruvbg}
+\setbeamercolor{separation line}{fg=gruvgray}
+
+% Titlegraphic / logo background (if used)
+\setbeamercolor{titlelike}{fg=gruvfg,bg=gruvbg}
+
+% Code listings (if minted/listings used)
+\setbeamercolor{code}{fg=gruvfg,bg=gruvbg}
+\setbeamercolor{codestring}{fg=gruvcyan}
+\setbeamercolor{codecomment}{fg=gruvgray}
+\setbeamercolor{codekeyword}{fg=gruvmagenta}
+
+% Hyperlink colors
+\hypersetup{
+  colorlinks=true,
+  linkcolor=gruvblue,
+  urlcolor=gruvcyan,
+  citecolor=gruvgreen
+}
+
+% Optional: slightly stronger structure accent (toggle by user)
+% \setbeamercolor{structure}{fg=gruvyellow}
+
+% End of package
+\endinput

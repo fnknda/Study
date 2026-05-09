@@ -268,6 +268,8 @@ Com essas novas adições, o arquivo ficou assim:
 + |                                      | // Peguei o valor do output do ldd de
 + | /lib64/ld-linux-x86-64.so.2          
 
+TODO: ELF com SHT_DYNAMIC
+
 TODO: O QUE ESTAVA ESCRITO AQUI??? REESCREVER...
 
 SHT_RELA SHT_DYNAMIC

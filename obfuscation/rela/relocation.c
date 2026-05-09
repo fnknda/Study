@@ -35,13 +35,12 @@ int main(int argc, char *argv[])
 	size_t interp_off = code_off + code_len;
 	size_t interp_size = strlen(interpreter) + 1;
 
-	Elf64_Shdr shdrs[5];
-	Elf64_Dyn dynamic[8];
+	Elf64_Shdr shdrs[3];
+	Elf64_Dyn dynamic[6];
 	Elf64_Sym sym[1];
 	Elf64_Rela *rela;
 	char *strtab[] = {
 	    "",
-	    ".dynamic",
 	};
 
 	size_t shdr_off = interp_off + interp_size;
@@ -122,45 +121,33 @@ int main(int argc, char *argv[])
 	phdrs[3].p_align = 0x8;
 
 	memset(&shdrs[0], 0, sizeof(Elf64_Shdr));
+	shdrs[0].sh_name = 0;
+	shdrs[0].sh_type = SHT_RELA;
+	shdrs[0].sh_addr = rela_off;
+	shdrs[0].sh_offset = rela_off;
+	shdrs[0].sh_size = rela_size;
+	shdrs[0].sh_addralign = 8;
+	shdrs[0].sh_entsize = sizeof(Elf64_Rela);
 
 	memset(&shdrs[1], 0, sizeof(Elf64_Shdr));
 	shdrs[1].sh_name = 0;
-	shdrs[1].sh_type = SHT_RELA;
-	shdrs[1].sh_addr = rela_off;
-	shdrs[1].sh_offset = rela_off;
-	shdrs[1].sh_size = rela_size;
+	shdrs[1].sh_type = SHT_STRTAB;
+	shdrs[1].sh_flags = SHF_ALLOC;
+	shdrs[1].sh_addr = strtab_off;
+	shdrs[1].sh_offset = strtab_off;
+	shdrs[1].sh_size = strtab_size;
 	shdrs[1].sh_addralign = 8;
-	shdrs[1].sh_entsize = sizeof(Elf64_Rela);
 
 	memset(&shdrs[2], 0, sizeof(Elf64_Shdr));
-	shdrs[2].sh_name = 1;
-	shdrs[2].sh_type = SHT_DYNAMIC;
-	shdrs[2].sh_flags = SHF_ALLOC | SHF_WRITE;
-	shdrs[2].sh_addr = dynamic_off;
-	shdrs[2].sh_offset = dynamic_off;
-	shdrs[2].sh_size = dynamic_size;
+	shdrs[2].sh_name = 0;
+	shdrs[2].sh_type = SHT_DYNSYM;
+	shdrs[2].sh_flags = SHF_ALLOC;
+	shdrs[2].sh_addr = sym_off;
+	shdrs[2].sh_offset = sym_off;
+	shdrs[2].sh_size = sym_size;
+	shdrs[2].sh_info = 1;
 	shdrs[2].sh_addralign = 8;
-	shdrs[2].sh_entsize = sizeof(Elf64_Dyn);
-
-	memset(&shdrs[3], 0, sizeof(Elf64_Shdr));
-	shdrs[3].sh_name = 0;
-	shdrs[3].sh_type = SHT_STRTAB;
-	shdrs[3].sh_flags = SHF_ALLOC;
-	shdrs[3].sh_addr = strtab_off;
-	shdrs[3].sh_offset = strtab_off;
-	shdrs[3].sh_size = strtab_size;
-	shdrs[3].sh_addralign = 8;
-
-	memset(&shdrs[4], 0, sizeof(Elf64_Shdr));
-	shdrs[4].sh_name = 0;
-	shdrs[4].sh_type = SHT_DYNSYM;
-	shdrs[4].sh_flags = SHF_ALLOC;
-	shdrs[4].sh_addr = sym_off;
-	shdrs[4].sh_offset = sym_off;
-	shdrs[4].sh_size = sym_size;
-	shdrs[4].sh_info = 1;
-	shdrs[4].sh_addralign = 8;
-	shdrs[4].sh_entsize = sizeof(Elf64_Sym);
+	shdrs[2].sh_entsize = sizeof(Elf64_Sym);
 
 	dynamic[0].d_tag = DT_RELA;
 	dynamic[0].d_un.d_ptr = rela_off;
@@ -174,17 +161,11 @@ int main(int argc, char *argv[])
 	dynamic[3].d_tag = DT_STRTAB;
 	dynamic[3].d_un.d_ptr = strtab_off;
 
-	dynamic[4].d_tag = DT_STRSZ;
-	dynamic[4].d_un.d_val = strtab_size;
+	dynamic[4].d_tag = DT_SYMTAB;
+	dynamic[4].d_un.d_ptr = sym_off;
 
-	dynamic[5].d_tag = DT_SYMTAB;
-	dynamic[5].d_un.d_ptr = sym_off;
-
-	dynamic[6].d_tag = DT_SYMENT;
-	dynamic[6].d_un.d_val = sizeof(Elf64_Sym);
-
-	dynamic[7].d_tag = DT_NULL;
-	dynamic[7].d_un.d_val = 0;
+	dynamic[5].d_tag = DT_NULL;
+	dynamic[5].d_un.d_val = 0;
 
 	memset(&sym[0], 0, sizeof(Elf64_Sym));
 
@@ -223,14 +204,14 @@ int makeRela(size_t code_off, bool use_evil, Elf64_Rela **out, size_t *out_num)
 		int rela_i = 0;
 		for (; bytes_left >= 8; rela_i++) {
 			rela[rela_i].r_offset = code_off + rela_i * 8;
-			rela[rela_i].r_info = ELF64_R_INFO(0, R_X86_64_64);
+			rela[rela_i].r_info = ELF64_R_INFO(0, R_X86_64_SIZE64);
 			rela[rela_i].r_addend = *(uint64_t *) (&evil[rela_i * 8]);
 			bytes_left -= 8;
 		}
 
 		if (bytes_left > 0) {
 			rela[rela_i].r_offset = code_off + rela_i * 8 - 8 + bytes_left;
-			rela[rela_i].r_info = ELF64_R_INFO(0, R_X86_64_64);
+			rela[rela_i].r_info = ELF64_R_INFO(0, R_X86_64_SIZE64);
 			rela[rela_i].r_addend = *(uint64_t *) (&evil[rela_i * 8 - 8 + bytes_left]);
 		}
 	}
