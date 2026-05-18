@@ -172,7 +172,7 @@ rela.zero:
 	;dd 1 ; r_info.type = R_X86_64_64
 	dd 33 ; r_info.type = R_X86_64_SIZE64
 	dd 0 ; r_info.sym = 0
-	dq 0xcc
+	dq 0xcc ; r_addend (payload) = int3
 rela.zero.end:
 rela.end:
 

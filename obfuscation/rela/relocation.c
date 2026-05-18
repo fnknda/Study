@@ -82,7 +82,7 @@ int main(int argc, char *argv[])
 	ehdr.e_phnum = sizeof(phdrs) / sizeof(Elf64_Phdr);
 	ehdr.e_shentsize = sizeof(Elf64_Shdr);
 	ehdr.e_shnum = sizeof(shdrs) / sizeof(Elf64_Shdr);
-	ehdr.e_shstrndx = 3;
+	ehdr.e_shstrndx = 1;
 
 	phdrs[0].p_type = PT_PHDR;
 	phdrs[0].p_flags = PF_R;

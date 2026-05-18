@@ -10,11 +10,8 @@ c.out: relocation
 
 relocation: relocation.c code.h evil.h
 
-code.h: code.bin
-	xxd -i -n code $< | tee $@
-
-evil.h: evil.bin
-	xxd -i -n evil $< | tee $@
+code.h evil.h: %.h: %.bin
+	xxd -i -n $* $< | tee $@
 
 code.bin evil.bin: %.bin: %.s
 	nasm -f bin -o $@ $^
